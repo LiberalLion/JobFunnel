@@ -1,5 +1,6 @@
 """Scraper designed to get jobs from www.indeed.X
 """
+
 import re
 from concurrent.futures import ThreadPoolExecutor, wait
 from math import ceil
@@ -18,9 +19,6 @@ from jobfunnel.backend.tools.filters import JobFilter
 from jobfunnel.backend.tools.tools import calc_post_date_from_relative_str
 from jobfunnel.resources import MAX_CPU_WORKERS, JobField, Remoteness
 
-# pylint: disable=using-constant-test,unused-import
-if False:  # or typing.TYPE_CHECKING  if python3.5.3+
-    from jobfunnel.config import JobFunnelConfigManager
 # pylint: enable=using-constant-test,unused-import
 
 ID_REGEX = re.compile(r'id=\"sj_([a-zA-Z0-9]*)\"')
@@ -133,16 +131,15 @@ class BaseIndeedScraper(BaseScraper):
         # Init threads & futures list FIXME: we should probably delay here too
         threads = ThreadPoolExecutor(max_workers=MAX_CPU_WORKERS)
         try:
-            # Scrape soups for all the result pages containing many job listings
-            futures = []
-            for page in range(0, pages):
-                futures.append(
-                    threads.submit(
-                        self._get_job_soups_from_search_page, search_url, page,
-                        job_soup_list
-                    )
+            futures = [
+                threads.submit(
+                    self._get_job_soups_from_search_page,
+                    search_url,
+                    page,
+                    job_soup_list,
                 )
-
+                for page in range(0, pages)
+            ]
             # Wait for all scrape jobs to finish
             wait(futures)
 
@@ -163,11 +160,9 @@ class BaseIndeedScraper(BaseScraper):
         elif parameter == JobField.LOCATION:
             return soup.find('span', attrs={'class': 'location'}).text.strip()
         elif parameter == JobField.TAGS:
-            # tags may not be on page and that's ok.
-            table_soup = soup.find(
+            if table_soup := soup.find(
                 'table', attrs={'class': 'jobCardShelfContainer'}
-            )
-            if table_soup:
+            ):
                 return [
                     td.text.strip() for td in table_soup.find_all(
                         'td', attrs={'class': 'jobCardShelfItem'}
@@ -176,16 +171,13 @@ class BaseIndeedScraper(BaseScraper):
             else:
                 return []
         elif parameter == JobField.REMOTENESS:
-            remote_field = soup.find('span', attrs={'class': 'remote'})
-            if remote_field:
+            if remote_field := soup.find('span', attrs={'class': 'remote'}):
                 remoteness_str = remote_field.text.strip().lower()
                 if remoteness_str in REMOTENESS_STR_MAP:
                     return REMOTENESS_STR_MAP[remoteness_str]
             return Remoteness.UNKNOWN
         elif parameter == JobField.WAGE:
-            # We may not be able to obtain a wage
-            potential = soup.find('span', attrs={'class': 'salaryText'})
-            if potential:
+            if potential := soup.find('span', attrs={'class': 'salaryText'}):
                 return potential.text.strip()
             else:
                 return ''
@@ -231,19 +223,7 @@ class BaseIndeedScraper(BaseScraper):
         TODO: use Enum for method instead of str.
         """
         if method == 'get':
-            return (
-                "https://www.indeed.{}/jobs?q={}&l={}%2C+{}&radius={}&"
-                "limit={}&filter={}{}".format(
-                    self.config.search_config.domain,
-                    self.query,
-                    self.config.search_config.city.replace(' ', '+',),
-                    self.config.search_config.province_or_state.upper(),
-                    self._quantize_radius(self.config.search_config.radius),
-                    self.max_results_per_page,
-                    int(self.config.search_config.return_similar_results),
-                    REMOTENESS_TO_QUERY[self.config.search_config.remoteness],
-                )
-            )
+            return f"https://www.indeed.{self.config.search_config.domain}/jobs?q={self.query}&l={self.config.search_config.city.replace(' ', '+')}%2C+{self.config.search_config.province_or_state.upper()}&radius={self._quantize_radius(self.config.search_config.radius)}&limit={self.max_results_per_page}&filter={int(self.config.search_config.return_similar_results)}{REMOTENESS_TO_QUERY[self.config.search_config.remoteness]}"
         elif method == 'post':
             raise NotImplementedError()
         else:
@@ -255,20 +235,19 @@ class BaseIndeedScraper(BaseScraper):
         TODO: implement with numpy instead of if/else cases.
         """
         if radius < 5:
-            radius = 0
+            return 0
         elif 5 <= radius < 10:
-            radius = 5
+            return 5
         elif 10 <= radius < 15:
-            radius = 10
+            return 10
         elif 15 <= radius < 25:
-            radius = 15
+            return 15
         elif 25 <= radius < 50:
-            radius = 25
+            return 25
         elif 50 <= radius < 100:
-            radius = 50
-        elif radius >= 100:
-            radius = 100
-        return radius
+            return 50
+        else:
+            return 100
 
     def _get_job_soups_from_search_page(self, search: str, page: str,
                                         job_soup_list: List[BeautifulSoup]
@@ -305,18 +284,13 @@ class BaseIndeedScraper(BaseScraper):
         # TODO: we should consider expanding the error cases (scrape error page)
         if not num_res:
             raise ValueError(
-                "Unable to identify number of pages of results for query: {}"
-                " Please ensure linked page contains results, you may have"
-                " provided a city for which there are no results within this"
-                " province or state.".format(search_url)
+                f"Unable to identify number of pages of results for query: {search_url} Please ensure linked page contains results, you may have provided a city for which there are no results within this province or state."
             )
 
         num_res = num_res.contents[0].strip()
         num_res = int(re.findall(r'f (\d+) ', num_res.replace(',', ''))[0])
         number_of_pages = int(ceil(num_res / self.max_results_per_page))
-        if max_pages == 0:
-            return number_of_pages
-        elif number_of_pages < max_pages:
+        if max_pages == 0 or number_of_pages < max_pages:
             return number_of_pages
         else:
             return max_pages
@@ -340,18 +314,7 @@ class IndeedScraperUKEng(BaseIndeedScraper, BaseUKEngScraper):
         TODO: use Enum for method instead of str.
         """
         if method == 'get':
-            return (
-                "https://www.indeed.{}/jobs?q={}&l={}&radius={}&"
-                "limit={}&filter={}{}".format(
-                    self.config.search_config.domain,
-                    self.query,
-                    self.config.search_config.city.replace(' ', '+',),
-                    self._quantize_radius(self.config.search_config.radius),
-                    self.max_results_per_page,
-                    int(self.config.search_config.return_similar_results),
-                    REMOTENESS_TO_QUERY[self.config.search_config.remoteness],
-                )
-            )
+            return f"https://www.indeed.{self.config.search_config.domain}/jobs?q={self.query}&l={self.config.search_config.city.replace(' ', '+')}&radius={self._quantize_radius(self.config.search_config.radius)}&limit={self.max_results_per_page}&filter={int(self.config.search_config.return_similar_results)}{REMOTENESS_TO_QUERY[self.config.search_config.remoteness]}"
         elif method == 'post':
             raise NotImplementedError()
         else:
@@ -366,19 +329,7 @@ class IndeedScraperFRFre(BaseIndeedScraper, BaseFRFreScraper):
         TODO: use Enum for method instead of str.
         """
         if method == 'get':
-            return (
-                "https://www.indeed.{}/jobs?q={}&l={}+%28{}%29&radius={}&"
-                "limit={}&filter={}{}".format(
-                    self.config.search_config.domain,
-                    self.query,
-                    self.config.search_config.city.replace(' ', '+',),
-                    self.config.search_config.province_or_state.upper(),
-                    self._quantize_radius(self.config.search_config.radius),
-                    self.max_results_per_page,
-                    int(self.config.search_config.return_similar_results),
-                    REMOTENESS_TO_QUERY[self.config.search_config.remoteness],
-                )
-            )
+            return f"https://www.indeed.{self.config.search_config.domain}/jobs?q={self.query}&l={self.config.search_config.city.replace(' ', '+')}+%28{self.config.search_config.province_or_state.upper()}%29&radius={self._quantize_radius(self.config.search_config.radius)}&limit={self.max_results_per_page}&filter={int(self.config.search_config.return_similar_results)}{REMOTENESS_TO_QUERY[self.config.search_config.remoteness]}"
         elif method == 'post':
             raise NotImplementedError()
         else:
@@ -405,18 +356,13 @@ class IndeedScraperFRFre(BaseIndeedScraper, BaseFRFreScraper):
         # TODO: we should consider expanding the error cases (scrape error page)
         if not num_res:
             raise ValueError(
-                "Unable to identify number of pages of results for query: {}"
-                " Please ensure linked page contains results, you may have"
-                " provided a city for which there are no results within this"
-                " province or state.".format(search_url)
+                f"Unable to identify number of pages of results for query: {search_url} Please ensure linked page contains results, you may have provided a city for which there are no results within this province or state."
             )
 
         num_res = normalize("NFKD", num_res.contents[0].strip())
         num_res = int(re.findall(r'(\d+) ', num_res.replace(',', ''))[1])
         number_of_pages = int(ceil(num_res / self.max_results_per_page))
-        if max_pages == 0:
-            return number_of_pages
-        elif number_of_pages < max_pages:
+        if max_pages == 0 or number_of_pages < max_pages:
             return number_of_pages
         else:
             return max_pages
